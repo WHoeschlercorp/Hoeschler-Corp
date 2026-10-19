@@ -15,7 +15,7 @@ that waits on it moves back automatically.
 |---|---|
 | `index.html` | The page and its styles |
 | `app.js` | The board, sign-in and team management |
-| `config.js` | Firebase settings and the owner's email |
+| `config.js` | Firebase settings |
 | `firestore.rules` | Who can read and change data (pasted into Firebase) |
 | `sw.js` | Keeps the site available offline |
 | `manifest.webmanifest`, `icon*` | App name and icon when installed |
@@ -23,7 +23,7 @@ that waits on it moves back automatically.
 ## One-time setup
 
 1. **Firebase settings:** fill in `config.js` with the values from Firebase console →
-   Project settings → Your apps, and set `OWNER_EMAIL`.
+   Project settings → Your apps.
 2. **Access rules:** in Firebase console → Firestore Database → Rules, paste the contents of
    `firestore.rules`, replace `OWNER_EMAIL_HERE` with the owner's email in lowercase, and click **Publish**.
 3. **Sign-in domain:** in Firebase console → Authentication → Settings → Authorized domains,

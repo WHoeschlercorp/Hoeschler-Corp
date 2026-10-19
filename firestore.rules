@@ -2,7 +2,8 @@ rules_version = '2';
 
 // Who can read and change the board.
 // Paste this into Firebase console → Firestore Database → Rules, then click Publish.
-// Replace OWNER_EMAIL_HERE with the owner's sign-in email (lowercase), the same as in config.js.
+// Replace OWNER_EMAIL_HERE with the owner's sign-in email in lowercase. The owner's email is
+// kept here, in Firebase, rather than in the website's public code.
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
@@ -16,6 +17,12 @@ service cloud.firestore {
     }
     function isMember() {
       return isOwner() || (signedIn() && exists(/databases/$(database)/documents/members/$(email())));
+    }
+
+    // Only the owner can read this; the website uses that to know who the owner is.
+    match /settings/{doc} {
+      allow read: if isOwner();
+      allow write: if false;
     }
 
     // Team list: everyone on the team can see it; only the owner can change it.

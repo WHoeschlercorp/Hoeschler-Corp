@@ -1,7 +1,7 @@
-import { firebaseConfig, OWNER_EMAIL } from "./config.js";
+import { firebaseConfig } from "./config.js";
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification, sendPasswordResetEmail, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const STATUSES = [
   { key: "none",  label: "Not started",   color: "var(--st-none)" },
@@ -678,10 +678,28 @@ $("addGroup").onclick = () => addGroup();
 $("addTask").onclick = () => { const id = addItem(); openDrawer(id); };
 
 /* ---------- Sign-in and team access ---------- */
-const configured = !Object.values(firebaseConfig).some(v => String(v).includes("PASTE")) && !OWNER_EMAIL.includes("OWNER_EMAIL");
+const configured = !Object.values(firebaseConfig).some(v => String(v).includes("PASTE"));
 let auth = null, me = null, unsubs = [];
 state.members = {}; state.teamOpen = false;
-const isOwner = () => !!me && (me.email || "").toLowerCase() === OWNER_EMAIL.toLowerCase();
+// Who the owner is lives only in the Firebase access rules (not in this public code):
+// only the owner is allowed to read settings/owner, so a successful read means "owner".
+let ownerFlag = false, boardRun = 0;
+const isOwner = () => ownerFlag;
+async function checkOwner(run) {
+  const key = "hoeschler.owner." + (me.email || "").toLowerCase();
+  ownerFlag = load(key, false);
+  try { await getDoc(doc(fs, "settings", "owner")); ownerFlag = true; }
+  catch (e) { if (e.code === "permission-denied") ownerFlag = false; }
+  if (run !== boardRun) return;
+  save(key, ownerFlag);
+  $("teamBtn").hidden = !ownerFlag;
+  $("importBtn").hidden = !ownerFlag;
+  if (ownerFlag) unsubs.push(onSnapshot(collection(fs, "members"), snap => {
+    state.members = {};
+    for (const d of snap.docs) state.members[d.id] = d.data();
+    if (state.teamOpen) renderTeam();
+  }, () => {}));
+}
 const siteUrl = () => location.origin + location.pathname.replace(/index\.html$/, "");
 
 const AUTH_ERRORS = {
@@ -773,14 +791,16 @@ function stopBoard() {
   for (const u of unsubs) u();
   unsubs = [];
   state.groups = {}; state.items = {}; state.members = {}; state.loaded = false;
+  ownerFlag = false; boardRun++;
 }
 
 function startBoard() {
   stopBoard();
   showApp(true);
   $("signOutBtn").title = "Signed in as " + me.email;
-  $("teamBtn").hidden = !isOwner();
-  $("importBtn").hidden = !isOwner();
+  $("teamBtn").hidden = true;
+  $("importBtn").hidden = true;
+  checkOwner(++boardRun);
   render();
   const status = { groups: null, items: null };
   const showStatus = () => {
@@ -803,11 +823,6 @@ function startBoard() {
     else $("syncState").textContent = "Couldn't reach the board · retrying";
   });
   unsubs.push(listen("groups"), listen("items"));
-  if (isOwner()) unsubs.push(onSnapshot(collection(fs, "members"), snap => {
-    state.members = {};
-    for (const d of snap.docs) state.members[d.id] = d.data();
-    if (state.teamOpen) renderTeam();
-  }, () => {}));
   refreshStatus = showStatus;
 }
 let refreshStatus = () => {};
@@ -841,8 +856,8 @@ function renderTeam() {
     } }, "Copy")),
     el("span", { class: "lab" }, `People with access (${emails.length + 1})`),
     el("div", { class: "teamlist" },
-      el("div", { class: "teamrow" }, el("span", {}, OWNER_EMAIL.toLowerCase()), el("span", { class: "who" }, "Owner")),
-      emails.filter(e => e !== OWNER_EMAIL.toLowerCase()).map(em => {
+      el("div", { class: "teamrow" }, el("span", {}, (me.email || "").toLowerCase()), el("span", { class: "who" }, "Owner (you)")),
+      emails.filter(e => e !== (me.email || "").toLowerCase()).map(em => {
         let armed = false;
         return el("div", { class: "teamrow" }, el("span", {}, em), el("button", { class: "iconbtn", onclick: async ev => {
           if (!armed) { armed = true; ev.target.textContent = "Click again to remove"; ev.target.style.color = "var(--st-stuck)"; return; }
