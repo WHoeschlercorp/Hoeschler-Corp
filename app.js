@@ -155,7 +155,26 @@ function itemsIn(gid) {
 function matches(it) {
   if (!state.q) return true;
   const q = state.q.toLowerCase();
-  return (it.name || "").toLowerCase().includes(q) || (it.owner || "").toLowerCase().includes(q);
+  return (it.name || "").toLowerCase().includes(q) || (it.owner || "").toLowerCase().includes(q)
+    || subs(it).some(x => (x.name || "").toLowerCase().includes(q) || (x.owner || "").toLowerCase().includes(q));
+}
+
+/* ---------- Subtasks (kept inside their task) ---------- */
+const subs = it => Array.isArray(it.subtasks) ? it.subtasks : [];
+const setSubs = (id, list) => updateItem(id, { subtasks: list });
+const addSub = (id, name) => setSubs(id, [...subs(state.items[id]), { id: uid(), name, status: "none", owner: "", due: "" }]);
+const updateSub = (id, sid, data) => setSubs(id, subs(state.items[id]).map(x => x.id === sid ? { ...x, ...data } : x));
+const deleteSub = (id, sid) => setSubs(id, subs(state.items[id]).filter(x => x.id !== sid));
+const subProgress = it => { const l = subs(it); return l.length ? `${l.filter(x => x.status === "done").length}/${l.length}` : ""; };
+state.subOpen = load("wb.subopen", {});
+const toggleSubs = id => { state.subOpen[id] = !state.subOpen[id]; if (!state.subOpen[id]) delete state.subOpen[id]; save("wb.subopen", state.subOpen); render(); };
+
+// "Add" boxes: add the entry, then put the cursor back in the box so several can be typed in a row.
+function addFromInput(input, fn) {
+  const v = input.value.trim(); if (!v) return;
+  input.value = ""; fn(v);
+  render(true);
+  document.getElementById(input.id)?.focus();
 }
 function visibleItems() {
   return Object.entries(state.items).filter(([, it]) => state.groups[it.groupId] && !state.hidden[it.groupId] && matches(it));
@@ -217,10 +236,10 @@ const setStatus = (id, k) => { updateItem(id, { status: k || "none" }); schedule
 /* ---------- Rendering ---------- */
 function setView(v) { state.view = v; save("wb.view2", v); render(); }
 
-function render() {
+function render(force) {
   // Don't rebuild under someone's cursor or mid-drag; redraw once they're done.
   const a = document.activeElement;
-  if (state.dragging || (a && a.matches && a.matches("#board input, #board textarea, #drawer input, #drawer textarea"))) { pendingRender = true; return; }
+  if (state.dragging || (!force && a && a.matches && a.matches("#board input, #board textarea, #drawer input, #drawer textarea"))) { pendingRender = true; return; }
   pendingRender = false;
   for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", b.dataset.view === state.view);
   renderSummary(); renderFilters();
@@ -311,10 +330,10 @@ function renderTable(b) {
       } }, "Delete")));
 
     const tbody = el("tbody");
-    for (const [id, it] of items) tbody.append(row(id, it));
-    tbody.append(el("tr", { class: "addrow" }, el("td", { colspan: 9, class: "name" },
-      el("input", { class: "cellin", placeholder: "+ Add task", "aria-label": "Add task to " + (g.name || "project"),
-        onkeydown: e => { if (e.key === "Enter" && e.target.value.trim()) { addItem(gid, e.target.value.trim()); e.target.value = ""; } },
+    for (const [id, it] of items) { tbody.append(row(id, it)); if (state.subOpen[id]) tbody.append(...subRows(id, it)); }
+    tbody.append(el("tr", { class: "addrow" }, el("td", { colspan: 8, class: "name" },
+      el("input", { class: "cellin", id: "add-" + gid, placeholder: "+ Add task", "aria-label": "Add task to " + (g.name || "project"),
+        onkeydown: e => { if (e.key === "Enter") addFromInput(e.target, v => addItem(gid, v)); },
         onblur: e => { if (e.target.value.trim()) { addItem(gid, e.target.value.trim()); e.target.value = ""; } } }))));
     sec.append(el("div", { class: "tablebox" }, el("table", {},
       el("thead", {}, el("tr", {}, el("th", {}, "Task"), el("th", {}, "Owner"), el("th", { class: "c" }, "Status"), el("th", { class: "c" }, "Priority"),
@@ -325,14 +344,45 @@ function renderTable(b) {
   }
 }
 
+function subRows(id, it) {
+  const enter = e => { if (e.key === "Enter") e.target.blur(); };
+  const rows = subs(it).map(x => {
+    const s = st(x.status), late = x.due && x.status !== "done" && toDay(x.due) < todayN();
+    return el("tr", { class: "subrow" },
+      el("td", { class: "name" }, el("div", { class: "namecell sub" }, el("span", { class: "subarrow" }, "↳"),
+        el("input", { class: "cellin", value: x.name || "", "aria-label": "Subtask name",
+          onchange: e => updateSub(id, x.id, { name: e.target.value.trim() || "Untitled subtask" }), onkeydown: enter }))),
+      el("td", { class: "owner" }, el("input", { class: "cellin", value: x.owner || "", placeholder: "Unassigned", "aria-label": "Subtask owner",
+        onchange: e => updateSub(id, x.id, { owner: e.target.value.trim() }), onkeydown: enter })),
+      el("td", { class: "pill" }, el("button", { class: "pillbtn", style: `background:${s.color}`,
+        onclick: e => openMenu(e.currentTarget, STATUSES, k => updateSub(id, x.id, { status: k || "none" })) }, s.label)),
+      el("td"), el("td"),
+      el("td", { class: "date" + (late ? " overdue" : "") }, el("input", { class: "cellin", type: "date", value: x.due || "", "aria-label": "Subtask due date",
+        onchange: e => updateSub(id, x.id, { due: e.target.value }) })),
+      el("td"),
+      el("td", { class: "del" }, el("button", { class: "iconbtn delbtn", "aria-label": "Delete subtask", title: "Delete subtask",
+        onclick: () => deleteSub(id, x.id) }, "✕")));
+  });
+  rows.push(el("tr", { class: "subrow addsub" }, el("td", { colspan: 8, class: "name" }, el("div", { class: "namecell sub" },
+    el("span", { class: "subarrow" }, "↳"),
+    el("input", { class: "cellin", id: "addsub-" + id, placeholder: "+ Add subtask", "aria-label": "Add subtask to " + (it.name || "task"),
+      onkeydown: e => { if (e.key === "Enter") addFromInput(e.target, v => addSub(id, v)); },
+      onblur: e => { if (e.target.value.trim()) { addSub(id, e.target.value.trim()); e.target.value = ""; } } })))));
+  return rows;
+}
+
 function row(id, it) {
   const s = st(it.status), p = pr(it.priority), slip = slipDays(it);
   const deps = (it.dependsOn || []).filter(x => state.items[x]);
+  const prog = subProgress(it), open = !!state.subOpen[id];
   return el("tr", {},
     el("td", { class: "name" }, el("div", { class: "namecell" },
+      el("button", { class: "subtoggle" + (prog ? "" : " nosubs"), "aria-expanded": String(open),
+        title: open ? "Hide subtasks" : prog ? "Show subtasks" : "Add subtasks", onclick: () => toggleSubs(id) }, open ? "▾" : "▸"),
       el("input", { class: "cellin", value: it.name || "", "aria-label": "Task name",
         onchange: e => updateItem(id, { name: e.target.value.trim() || "Untitled task" }),
         onkeydown: e => { if (e.key === "Enter") e.target.blur(); } }),
+      prog ? el("button", { class: "subcount" + (prog.split("/")[0] === prog.split("/")[1] ? " all" : ""), title: "Subtasks done", onclick: () => toggleSubs(id) }, "☑ " + prog) : null,
       el("button", { class: "iconbtn openbtn" + (it.notes ? " has-notes" : ""), onclick: () => openDrawer(id) }, it.notes ? "Notes ●" : "Open"))),
     el("td", { class: "owner" }, el("input", { class: "cellin", value: it.owner || "", placeholder: "Unassigned", "aria-label": "Owner",
       onchange: e => updateItem(id, { owner: e.target.value.trim() }), onkeydown: e => { if (e.key === "Enter") e.target.blur(); } })),
@@ -513,7 +563,13 @@ function attachDrag(bar, id, it, ppd) {
 /* ----- Calendar ----- */
 function dueMap() {
   const m = {};
-  for (const [id, it] of visibleItems()) { const d = toDay(it.due); if (d != null) (m[d] = m[d] || []).push([id, it]); }
+  for (const [id, it] of visibleItems()) {
+    const d = toDay(it.due); if (d != null) (m[d] = m[d] || []).push([id, it]);
+    for (const x of subs(it)) {
+      const sd = toDay(x.due);
+      if (sd != null) (m[sd] = m[sd] || []).push([id, { ...x, name: "↳ " + (x.name || "Untitled subtask"), groupId: it.groupId }]);
+    }
+  }
   return m;
 }
 function renderCalendar(b) {
@@ -598,7 +654,8 @@ function renderKanban(b) {
           p ? el("span", { class: "tag", style: `background:${p.color}` }, p.label) : null,
           it.owner ? el("span", {}, it.owner) : null,
           it.due ? el("span", { class: "due" + (isOverdue(it) ? " overdue" : "") }, fmtShort(toDay(it.due))) : null,
-          slip && it.status !== "done" ? el("span", { class: "slip" }, "+" + slip + "d") : null)));
+          slip && it.status !== "done" ? el("span", { class: "slip" }, "+" + slip + "d") : null,
+          subProgress(it) ? el("span", { title: "Subtasks done" }, "☑ " + subProgress(it)) : null)));
     }
     board.append(col);
   }
@@ -633,7 +690,7 @@ function renderDrawer() {
   }
 
   let armed = false;
-  d.replaceChildren(
+  d.replaceChildren(...[
     el("div", { style: "display:flex;justify-content:space-between;align-items:center;gap:8px" },
       el("h2", {}, "Task details"), el("button", { class: "iconbtn", onclick: closeDrawer, "aria-label": "Close" }, "✕")),
     el("input", { id: "dName", value: it.name || "", "aria-label": "Task name", style: "font-weight:600;font-size:16px",
@@ -661,6 +718,17 @@ function renderDrawer() {
         el("button", { "aria-label": "Remove", onclick: () => updateItem(id, { dependsOn: deps.filter(x => x !== p) }) }, "✕")))) : null,
       addSel,
       blocks.length ? el("p", {}, "Holding up: " + blocks.map(([, o]) => o.name).join(", ")) : null),
+    el("div", { class: "depbox" },
+      el("span", { class: "lab" }, "Subtasks" + (subProgress(it) ? " · " + subProgress(it) + " done" : "")),
+      subs(it).map(x => el("div", { class: "subitem" },
+        el("input", { type: "checkbox", checked: x.status === "done", "aria-label": "Done",
+          onchange: e => updateSub(id, x.id, { status: e.target.checked ? "done" : "none" }) }),
+        el("input", { class: "subname" + (x.status === "done" ? " done" : ""), value: x.name || "", "aria-label": "Subtask name",
+          onchange: e => updateSub(id, x.id, { name: e.target.value.trim() || "Untitled subtask" }) }),
+        el("input", { type: "date", value: x.due || "", "aria-label": "Subtask due date", onchange: e => updateSub(id, x.id, { due: e.target.value }) }),
+        el("button", { class: "iconbtn", "aria-label": "Delete subtask", onclick: () => deleteSub(id, x.id) }, "✕"))),
+      el("input", { id: "dAddSub", placeholder: "+ Add a subtask, then press Enter",
+        onkeydown: e => { if (e.key === "Enter") addFromInput(e.target, v => addSub(id, v)); } })),
     el("label", { for: "dNotes" }, "Notes and updates"),
     el("textarea", { id: "dNotes", placeholder: "Add details, links, contacts or progress updates…", onchange: e => updateItem(id, { notes: e.target.value }) }, it.notes || ""),
     el("div", { class: "foot" },
@@ -668,7 +736,7 @@ function renderDrawer() {
       el("button", { class: "btn danger", onclick: e => {
         if (!armed) { armed = true; e.target.textContent = "Click again to delete"; return; }
         deleteItem(id); closeDrawer(); toast("Task deleted");
-      } }, "Delete task")));
+      } }, "Delete task"))].filter(x => x != null));
 }
 
 /* ---------- Toolbar ---------- */
